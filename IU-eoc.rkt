@@ -22,12 +22,12 @@
 ;(fx+ "asdfas")
 (fx+ 10 12 22)
 
-exp ::= (Int int)
-exp ::= (Prim 'read ())
-exp ::= (Prim '- (exp)) ;; 这样也可以(Prim '- exp)， 
-exp ::= (Prim '+ (exp exp))
-exp ::= (Prim '- (exp exp))
-LInt ::= (Program '() exp)
+;exp ::= (Int int)
+;exp ::= (Prim 'read ())
+;exp ::= (Prim '- (exp)) ;; 这样也可以(Prim '- exp)， 
+;exp ::= (Prim '+ (exp exp))
+;exp ::= (Prim '- (exp exp))
+;LInt ::= (Program '() exp)
 
 (Int 8)
 (Prim '- ((Int 8)))
@@ -128,7 +128,7 @@ LInt ::= (Program '() exp)
 
 ;;(define ast1_1 (Prim '+ (list rd neg-eight)))
 
-(is_Lint (Program '() ast1_1)
+(is_Lint (Program '() ast1_1))
 (is_Lint (Program '()
                   (Prim '* (list (Prim 'read '())
                                  (Prim '+ (list (Int 8)))))))
@@ -511,41 +511,646 @@ LInt ::= (Program '() exp)
 
 (append* '(a) '(b) '((c) (d)))
 
+(begin
+    (define-values (a b c)
+    (for/lists (l1 l2 l3)
+             ([i '(1 2 3)]
+              [j "abc"]
+              [k "ABC"])
+    (values i j k)))
+    (printf "~a ~a ~a \n" a b c))
+
+(for/lists (l1 l2 l3)
+             ([i '(1 2 3)]
+              [j "abc"]
+              #:when (odd? i) ;;when后面的为子循环
+              [k #(#t #f)])
+    (values i j k))
+
+
+(let ([x 10])
+   (let ([y (+ 42 (- 100))])
+     (+ x y)))
+
+(Program
+ '()
+ (Let 'x1229018 (Int 10)
+  (Let 'y1229019 (Let 'tmp1229020 (Prim '- (list (Int 100)))
+                      (Prim '+ (list (Int 42) (Var 'tmp1229020))))
+       (Prim '+ (list (Var 'x1229018) (Var 'y1229019))))))
+
+(let ([x1229018 10])
+  (let ([y1229019 (let ([tmp1229020 (- 100)])
+                    (+ 42 tmp1229020))])
+    (+ x1229018 y1229019)))
+
+
+(remove-complex-opera* 
+   (Program
+ '()
+ (Let
+  'x1330363
+  (Int 10)
+  (Let
+   'y1330364
+   (Prim '+ (list (Int 42) (Prim '- (list (Int 100)))))
+   (Prim '+ (list (Var 'x1330363) (Var 'y1330364)))))))
+(Program
+ '()
+ (Let
+  'x1330363
+  (Int 10)
+  (Let
+   'y1330364
+   (Let
+    'tmp1346057
+    (Prim '- (list (Int 100)))
+    (Prim '+ (list (Int 42) (Var 'tmp1346057))))
+   (Prim
+    '+
+    (list (Var 'x1330363) (Var 'y1330364))))))
+
+
+(rco-atom (Prim '- (list (Int 100))))
+(Var 'tmp1477744)
+(list (cons 'tmp1477744 (Prim '- (list (Int 100)))))
+(rco-atom (Prim '+ (list (Int 42) (Int 100))))
+(Var 'tmp1493694)
+(list (cons 'tmp1493694 (Prim '+ (list (Int 42) (Int 100)))))
+
+
+(define (rco-exp e)
+  (match e
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Let x rhs body)
+     (Let x (rco-exp rhs) (roc-exp body))]
+    [(Prim op es)
+     (define-values (new-es sss)
+       (for/lists (l1 l2) ([e es]) (rco-atom e)))
+     ;;变量和表达式的对应关系
+     (make-lets (append* sss) (Prim op new-es))]))
+
+(define make-lets
+  (lambda (var-exp e)
+    (match var-exp
+      [`() e]
+      [`((,x . ,e^) . ,var-exp^)
+       (Let x e^ (make-lets (var-exp^ e)))])))
+
+(define roc-atom
+  (lambda (e)
+    (match e
+      [(Var x) (Var x)]
+      [(Int n) (Int n)]
+      [(Let x rhs body)
+       (define new-rhs (rco-exp rhs))
+       (define-values (new-body body-ss) (rco-atom body))
+       (values new-body (append `((,x . ,new-rhs)) body-ss))]
+      [(Prim op es)
+       (define-values (new-es sss)
+         (for/lists (l1 l2) ([e es]) (roc-atom e)))
+       (define ss (append* sss))
+       (define tmp (gensym 'tmp))
+       (values (Var tmp)
+               (append ss `((,tmp . ,(Prim op new-es)))))])))
+
+;; the notion of tail position
+;1. In (Program () e), expression e is in tail position.
+;2. If (Let x e1 e2) is in tail position, then so is e2.
+
+
+;;移除复杂操作后
+42
+(Program '() (Int 42))
+
+(+ 20 22)
+(Program '() (Prim '+ (list (Int 20) (Int 22))))
+
+(let ([x 41]) (+ x 1))
+(Program '() (Let 'x2203899 (Int 41) (Prim '+ (list (Var 'x2203899) (Int 1)))))
+
+;x = 41;
+;tmp = (+ x 1);
+;return tmp;
+
+
+(let ([x 10])
+   (let ([x (+ x 1)])
+     x))
+(Program
+ '()
+ (Let
+  'x2203900
+  (Int 10)
+  (Let 'x2203901 (Prim '+ (list (Var 'x2203900) (Int 1))) (Var 'x2203901))))
+
+
+(let ([x 10])
+   (let ([y (+ 42 (- 100))])
+     (+ x y)))
+(Program
+ '()
+ (Let
+  'x2203902
+  (Int 10)
+  (Let
+   'y2203903
+   (Let
+    'tmp2203904
+    (Prim '- (list (Int 100)))
+    (Prim '+ (list (Int 42) (Var 'tmp2203904))))
+   (Prim '+ (list (Var 'x2203902) (Var 'y2203903))))))
+
+;; https://git.fracta.dev/enrico/eoc/src/branch/master/explicate-control.rkt
+
+(program ((locals . (x.1 x.2 y)))
+         ((start .
+                 (seq (assign x.1 20)
+                      (seq (assign x.2 22)
+                           (seq (assign y (+ x.1 x.2))
+                                (return y)))))))
+
+;; 实际语法
+(let ([x (let ([x 4])
+            (+ x 1))])
+    (+ x 2))
+
+;; 抽象语法
+(Program '() (Let 'x (Let 'x (Int 4)
+                          (Prim '+ (list (Var 'x) (Int 1))))
+                  (Prim '+ (list (Var 'x) (Int 2)))))
+
+(define (uniquify-exp env)
+  (lambda (e)
+    (match e
+      ;; prim中会有var
+      ;; 将(Var x) 变成(Var x123)
+      [(Var x) (Var (dict-ref env x))]
+      [(Int n) (Int n)]
+      ;; 变成(Let x345 ....)
+      [(Let x e body)
+       (define new-sym (gensym x))
+       (define new-env (dict-set env x new-sym))
+       (Let new-sym ((uniquify-exp env) e) ((uniquify-exp new-env) body))]
+      [(Prim op es)
+       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
+
+(define (uniqufy p)
+  (match p
+    [(Program info e)
+     (Program info ((uniquify-exp '()) e))]))
+
+(define (remove-comlex-opera* p)
+  (match p
+    [(Program info e)
+     (Program info (rco-exp e))]))
+
+
+(define (rco-exp e)
+  (match e
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Let x rhs body)
+     (Let x (rco-exp rhs) (rco-exp body))]
+    [(Prim op es)
+     (define-values (new-es
+
+                     ....))]))
+
+(let ([x (+ 42 (- 10))])
+  (+ x (+ 5 6)))
+
+(let ([x (let ([tmp.1 (- 10)])
+           (+ 42 tmp.1))])
+  (let [(tmp.2 (+ 5 6))]
+    (+ x tmp.2)))
+
+;; 返回的是什么？
+;; 以(+ 5 6)为例
+(define (rco-atom e)
+  (match e
+    [(Var x) (values (Var x) '())]
+    [(Int n) (values (Int n) '())]
+    [(Let x rhs body)
+     (define new-rhs (rco-exp rhs))
+     (define-values (new-body body-ss) (rco-atom body))
+     (values new-body (append `((,x . ,new-rhs)) body-ss))]
+    [(Prim op es)
+     (define-values (new-es sss)
+       (for/lists (l1 l2)([e es]) (rco-atom e)))
+     ;;组成一个list
+     (define ss (append* sss))
+     (define tmp (gensym 'tmp))
+     ;; 返回 临时变量 变量和表达式的对应关系
+     ;; 内部和外部反过来来了
+     ;; (values (Var tmp.1) ((tmp.1 . (Prim + 5 6))))
+     (values (Var tmp)
+             (append ss `((,tmp . ,(Prim op new-es)))))]))
+
+(define (rco-exp e)
+  (match e
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Let x rhs body)
+     (Let x (rco-exp rhs) (rco-exp body))]
+    [(Prim op es)
+     (define-values (new-es sss)
+       (for/list (l1 l2) ([e es]) (rco-atom e)))
+     (make-lets (append* sss) (Prim op new-es))]))
+
+(define (make-lets bs e)
+  (match bs
+    [`() e]
+    [`((,x . ,e^) . ,bs^)
+     (Let x e^ (make-lets bs^ e))]))
+
+(Program '() (Let 'x3575137 (Int 10)
+                  (Let 'y3575138 (Let 'tmp3575139 (Prim '- (list (Int 100)))
+                                      (Prim '+ (list (Int 42) (Var 'tmp3575139))))
+                       (Prim '+ (list (Var 'x3575137) (Var 'y3575138))))))
+
+
+(Block '() (list (Instr 'movq (list (Imm 42) (Reg 'rax)))
+                 (Jmp 'conclusion)))
+
+(define (remove-complex-op* p)
+  (match p
+    [(Program info e)
+     (Program info (rco-exp e))]))
+
+(define (rco-exp e)
+  (match e
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Let x rhs body)
+     ;; 将rhs和body中的complex变成let
+     (Let x (rco-exp rhs) (rco-exp body))]
+    [(Prim op es) ;; es为e的复数
+     (define-values (atom-es var-exps)
+       (for/lists (l1 l2) ([e^ es]) (rco-atom e^)))
+     ;; 这个地方不可以再gensym了
+     ;;(make-lets (append (append* var-exps) (Prim op atom-es)))]
+     (make-lets (append* var-exps) (Prim op atom-es))]))
+
+(define (rco-atom e)
+  (match e
+    ;; atom转换之后的表达式，与临时变量和对应的值
+    [(Var x) (values (Var x) '())]
+    [(Int n) (values (Int n) '())]
+    [(Let x rhs body)
+     (define new-rhs (rco-exp rhs))
+     (define-values (new-body temp-exps) (rco-atom body))
+     ;; 不是返回Let了
+     (values new-body (append `((,x . ,new-rhs)) temp-exps))]
+    [(Prim op es)
+     (define-values (atom-exps var-exps)
+       (for/lists (l1 l2) ([e^ es]) (rco-atom e^)))
+     ;; (values (op atom-exps) (append* var-exps))]))
+     ;; 需要将该op，变成临时变量
+     (define tmp (gensym 'tmp))
+     (values (Var tmp) ;;转换后的表达式
+             (append (append* var-exps) `((,tmp . ,(Prim op atom-exps)))))]))
+
+(define (make-lets bs e)
+  (match bs
+    [`() e]
+    [`((,x . ,e^) . bs^)
+     (Let x e^ (make-lets bs^ e))]))
+
+(define (explicate-control p)
+  (match p
+    [(Program info body)
+     (define-values (body-tail body-vars) (explicate-tail body))
+     (CProgram info `((start . ,body-tail)))]))
+
+(define (explicate-tail exp)
+  (match exp
+    [(Var x) (values (Return (Var x)) '())]
+    [(Int n) (values (Return (Int n)) '())]
+    [(Let x rhs body)
+     ;; 需要对x进行赋值
+     (define-values (body-tail body-vars) (explicate-tail body))
+     ;;(define-values (rhs-tail rhs-vars) (explicate-tail rhs))
+     ;;(define new-tail (explicate-assign x rhs-tail body-tail))
+     ;;(values (new-tail (append rhs-vars body-vars)))]
+     (define-values (x-tail rhs-vars) (explicate-assign x rhs body-tail))
+     (values x-tail (cons x (append rhs-vars body-vars)))]
+    [(Prim op es)
+     (values (Return (Prim op es)) '())]))
+
+;(define (explicate-assign v rhs c)
+;  (match rhs
+;    [(Var x)
+;     (values (Seq (Assign (Var v) rhs) c))]
+;    [(Int n)
+;     (values (Seq (Assign (Var v) rhs) c))]
+;    [(Let x rhs1 body)
+;     ;;(define-values (rhs1-tail rhs1-vars) (explicate-tail rhs1))
+;     ;;(define-values (body-tail body-vars) (explicate-tail body))
+;     ;;(explicate-assign x body-tail rhs1-tail)]
+;    [(Prim op es)
+;     (values (Seq (Assign (Var v) (Prim op es)) c))]))
+
+(define (explicate-assign v rhs c)
+  (match rhs
+    [(Var x)
+     (values (Seq (Assign (Var v) rhs)) '())]
+    [(Int n)
+     (values (Seq (Assign (Var v) rhs)) '())]
+    [(Let x rhs1 body)
+     ;; 需要将body赋值给v
+     (define-values (v-tail body-vars) (explicate-assign v body c))
+     (define-values (x-tail rhs1-vars) (explicate-assign x rhs1 v-tail))
+     ;;(values x-tail (append rhs1-vars body-vars))
+     (values x-tail (cons x (append rhs1-vars body-vars)))]
+    [(Prim op es)
+     (values (Seq (Assign (Var v) (Prim op es))) '())]))
+
+(define (select-instr p)
+  (match p
+    [(CProgram info (list (cons 'start t)))
+     (X86Program info (list (cons 'start (Block '() (select-instr-tail t)))))]))
+
+(define (select-instr-tail t)
+  (match t
+    [(Seq stmt t*)
+     (append (select-instr-stmt stmt) (select-instr-tail t*))]
+    ;; read单独处理
+    [(Return (Prim 'read '()))
+     (list (Callq 'read_int)
+           (Jmp 'conclusion))]
+    [(Return e)
+     (append
+      (select-instr-assign (Reg 'rax) e)
+      (list (Jmp 'conclusion)))]))
+
+(define (select-instr-stmt stmt)
+  ;;Cvar中Assign为 (Assign (Var v) exp)
+  (match stmt
+    [(Assign (Var v) (Prim '+ (list (Var v1) a2)))
+     #:when (equal? v v1)
+     (list (Instr 'addq (list (select-instr-atm a2) (Var v))))]
+    [(Assign (Var v) (Prim '+ (list a1 (Var v2))))
+     #:when (equal? v v2)
+     (list (Instr 'addq (list (select-instr-atm a1) (Var v))))]
+    [(Assign v e)
+     (select-instr-assign v e)]))
+
+(define (select-instr-atm a)
+  (match a
+    [(Int i) (Imm i)]
+    [(Var _) a]))
+
+;;(Assign (Var v) exp)
+(define (select-instr-assign v e)
+  (match e
+    [(Int i)
+     (list (Instr 'movq (list (select-instr-atm e) v)))]
+    [(Var _)
+     (list (Instr 'movq (list (select-instr-atm e) v)))]
+    [(Prim 'read '())
+     (list (Callq 'read_int)
+           (Instr 'movq (list (Reg 'rax) v)))]
+    [(Prim '- (list a))
+     (list (Instr 'movq (list (select-instr-atm a) v))
+           (Instr 'negq (list v)))]
+    [(Prim '+ (list a1 a2))
+     (list (Instr 'movq (list (select-instr-atm a1) v))
+           (Instr 'addq (list (select-instr-atm a2) v)))]))
+
+;; info 为 (cons (cons 'locals let-binds) info)
+(define (assign-homes p)
+  (match p
+    [(X86Program info (list (cons 'start es)))
+     (define vars (cdr (car info)))
+     (X86Program (list (cons 'stack-space (calc-stack-space vars)))
+                 (list (cons 'start (assign-homes-block es (car info)))))]))
+
+(define (calc-stack-space ls)
+  (* 8 (length ls)))
+
+(define (assign-homes-block b ls)
+  (match b
+    [(Block info es)
+     (Block info (for/lists ([e es]) (assign-homes-instr e ls)))]))
+
+(define (assign-homes-instr i ls)
+  (match i
+    [(Instr op (list e1))
+     (Instr op (list (assign-homes-imm e1 ls)))]
+    [(Instr op (list e1 e2))
+     (Instr op (list (assign-homes-imm e1 ls) (assign-homes-imm e2 ls)))]
+    [else i]))
+
+(define (assign-homes-imm i ls)
+  (match i
+    [(Reg reg) (Reg reg)]
+    [(Imm int) (Imm int)]
+    [(Var v)
+     (Deref 'rbp (* -8 (find-index v (cdr ls))))]))
+
+;; 跟explicate-tail中let分支中rhs-vars 和 body-vars的顺序相关
+(define (find-index v ls)
+  (cond
+    [(eq? v (car ls)) 1]
+    [else
+     (add1 (find-index v (cdr ls)))]))
+
+
+(X86Program
+ '((stack-space . 16))
+ (list
+  (cons
+   'start
+   (Block
+    '()
+    (list
+     (Instr 'movq (list (Imm 42) (Deref 'rbp -8)))
+     ;; patch instruction
+     (Instr 'movq (list (Deref 'rbp -8) (Deref 'rbp -16)))
+     (Instr 'movq (list (Deref 'rbp -16) (Reg 'rax)))
+     (Jmp 'conclusion))))))
+
+(define (patch-instructions p)
+  (match p
+    [(X86Program info B-list)
+     (X86Program info (map
+                       (lambda (x)
+                         `(,(car x) . ,(patch-block (cdr x))))
+                       B-list))]))
+
+(define (patch-block b)
+  (match b
+    [(Block '() instrs)
+     (Block '() (append-map patch-instr instrs))]))
+
+(define (patch-instr i)
+  (match i
+    [(Instr op (list (Deref reg off) (Deref reg2 off2)))
+     (list (Instr 'movq (list (Deref ref off) (Reg 'rax)))
+           (Instr op (list (Reg 'rax) (Deref reg2 off2))))]
+    [else (list i)]))
+
+(let ([v 1])
+  (let ([w 42])
+    (let ([x (+ v 7)])
+      (let ([y x])
+        (let ([z (+ x w)])
+          (+ z (- y)))))))
+
+;locals-types:
+;    x : Integer, y : Integer,
+;    z : Integer, t : Integer,
+;    v : Integer, w : Integer
+;start:
+;    movq $1, v
+;    movq $42, w
+;    movq v, x
+;    addq $7, x
+;    movq x, y
+;    movq x, z ;; 完成该movq后，x不再被使用。且z只有在此之后被使用
+;    addq w, z
+;    movq y, t
+;    negq t
+;    movq z, %rax
+;    addq t, %rax
+;    jmp conclusion
+
+;; 图着色
+;; 无向图
+;; 顶点代表变量
+;; 边代表冲突
+
+;; interfere
+
+;; the interference graph
+;; The writes performed by an instruction must not overwrite something in a live location
+
+;; With the addition of the register allocator,
+;; the callee-saved registers used by the register allocator must be saved in the prelude and restored in the conclusion.
+
+;; In the prelude of the main function,
+;; we push rbx onto the stack because it is a callee-saved register and it was assigned to a variable by the register allocator.
+
+(X86Program
+ ;; locals 与 local-types
+ '((locals a166528 b166529)
+   (locals-types (b166529 . Integer) (a166528 . Integer)))
+ (list
+  (cons
+   'start
+   (Block
+    '()
+    (list
+     (Instr 'movq (list (Imm 42) (Var 'a166528)))
+     (Instr 'movq (list (Var 'a166528) (Var 'b166529)))
+     (Instr 'movq (list (Var 'b166529) (Reg 'rax)))
+     (Jmp 'conclusion))))))
+
+;locals-types:
+;    x: Integer,
+;    y: Integer,
+;    z: Integer,
+;    t: Integer,
+;    v: Integer,
+;    w: Integer
+;start:
+;    movq $1, v
+;    movq $42, w
+;    movq v, x ;;重点
+;    addq $7, x
+;    movq x, y
+;    movq x, z ;;重点
+;    addq w, z
+;    movq y, t
+;    negq t
+;    movq z, %rax ;; 重点
+;    addq t, %rax ;; 重点
+;    jmp conclusion
+
+;; In particular, the caller is responsible for freeing some registers prior to the function call for use by the callee.
+
+;; The prelude subtracts 8 bytes from the rsp to make it 16-byte aligned
+
+;; https://stackoverflow.com/questions/9268586/what-are-callee-and-caller-saved-registers#:~:text=Caller%2Dsaved%20registers%20(AKA%20volatile,not%20be%20preserved%20across%20calls.
+;; https://stackoverflow.com/questions/9268586/what-are-callee-and-caller-saved-registers
+
+;; caller view: 需要callee做的内容
+;; callee view: 需要caller做的内容
+
+;; a variable is live at a program point
+;; if the current value in the variable might be used later in the program
+
+;; interference can use a two-dimensional array data sturctue
+
+(define (build-interference-block ast G)
+  (match ast
+    [(Block info ss)
+     (define lives (dict-ref info 'lives))
+     (define live-afters (cdr lives))
+     (define new-ss
+       (for/list ([inst ss] [live-after live-afters])
+         ((build-interference-instr live-after G) instr)))
+     (define new-info (dict-remove info 'lives))
+     (Block new-info new-ss)]
+    [else (error "error ast " ast)]))
+
+(define (build-interference-instr live-after G)
+  (lambda (ast)
+    (match ast
+      [(Instr 'movq (list s d))
+       (for ([v live-after])
+         (for ([d^ (free-vars d)])
+           (cond
+             [(equal? (Var v) s)
+              (void)]
+             [(equal? v d)
+              (void)]
+             [else
+              (add-edge! G d v)])))
+       ast]
+      [(Callq f args*)
+       (for ([v live-after])
+         (for ([u caller-save-for-alloc])
+           (cond
+             ;; 同一个顶点
+             [(equal? v u)
+              (void)]
+             [else
+              ;; caller-save的寄存器可以随意分配，为什么还要加边？？
+              (add-edge! G u v)])))
+       ast]
+      [else
+       ...])))
+
+
+(define (free-vars arg)
+  (match arg
+    [(Var x) (set x)]
+    [(Reg r) (set r)]
+    [(Deref r i) (set r)]
+    [(Imm n) (set)]
+    [else (error "free-vars error" arg)]))
 
 
 
 
 
 
-                  
 
 
+
+     
+            
+
+
+
+
+                 
     
+       
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-
-
-
-
+ 
