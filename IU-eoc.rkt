@@ -1119,12 +1119,19 @@
               (void)]
              [else
               ;; caller-save的寄存器可以随意分配，为什么还要加边？？
+              ;; 应该是callee-save的吧？
               (add-edge! G u v)])))
        ast]
       [else
-       ...])))
-
-
+       (for ([v live-after])
+         (for ([d (write-vars ast)])
+           (cond
+             [(equal? v d)
+              (void)]
+             [else
+              (add-edge! G d v)])))
+       ast])))
+       
 (define (free-vars arg)
   (match arg
     [(Var x) (set x)]
@@ -1133,24 +1140,361 @@
     [(Imm n) (set)]
     [else (error "free-vars error" arg)]))
 
+(define (build-interference-block ast G)
+  (match ast
+    [(Block info ss)
+     (define lives (dict-ref info 'lives))
+     (define live-afters (cdr lives))
+     (define new-ss
+       (for/list ([inst ss] [live-after live-afters])
+         ((build-interference-instr live-after G) inst)))
+     (define new-info (dict-remove info 'lives))
+     (Block new-info new-ss)]
+    [else (error "ast is error" ast)]))
 
 
+;; 创建move图
+(define (build-move-block ast MG)
+  (match ast
+    [(Block info ss)
+     (define new-ss
+       (if use-move-biasing
+           (let ([nss (for/list ([inst ss])
+                        ((build-move-graph-instr MG) inst))])
+             nss)
+           ss))
+     (Block info new-ss)]))
+
+(define (build-move-graph-instr G)
+  (lambda (ast)
+    (match ast
+      [(Instr 'movq (list (Var s) (Var d)))
+       (if use-move-biasing
+           (add-edge! G s d)
+           '())
+       ast]
+      [else ast])))
 
 
+(define (allocate-registers ast)
+  (match ast
+    [(X86Program info Blocks)
+     (define locals (dict-ref info 'locals))
+     (define IG (dict-ref info 'conflicts))
+     (define MG (dict-ref info 'move-graph))
+     (define-values (color num-spills) (color-graph IG MG info))
 
+     ;; 根据颜色分配寄存器或者是栈
+     (define homes
+       (for/hash ([x locals])
+         ;; 获取分配的结果
+         (define home (identify-home (num-used-callee locals color)
+                                     (hash-ref color x)))
+         ;; 返回对应关系
+         (values x home)))
+     ...]))
 
+;;
+;; unavail-colors
+;; a -> {1, 2, 3}
+;; b -> {2, -1}
+;;
+;; Q
+;; Node(a) -> Node(b) -> Node(c) -> ...
+;;
+;; pq-node
+;; a -> Node(a)
+;; b -> Node(b)
+;; c -> Node(c)
+;;
+;; color
+;; a -> 1
+;; b-> 2
+;; c-> -8%(rbp)
+;;
 
+(define (color-graph IG MG info)
+  (define locals (dict-ref info 'locals))
+  (define num-spills (init-num-spills))
+  (define unavail-colors (make-hash))
+  (define (compare u v)
+    (>= (set-count (hash-ref unavail-colors u))
+        (set-count (hash-ref unavail-colors v))))
+  (define Q (make-pqueue compare))
+  (define pq-node (make-hash))
+  (define color (make-hash))
 
-     
-            
+  ;; 初始化，将已经存在的寄存器分配颜色
+  (for ([x locals])
+    (define adj-reg
+      ;; 过滤出其中的寄存器
+      ;; 过滤出x的邻接结点中的寄存器
+      (filter (lambda (u) (set-member? registers u))
+              (get-neighbors IG x)))
+    ;; 对x的邻接寄存器染色
+    (define adj-reg-colors-list (map register->color adj-reg))
+    (define adj-colors (list->set adj-reg-colors-list))
+    ;; 标注x的饱和度
+    (hash-set! unavail-colors x adj-colors)
+    ;; 将x放入队列中
+    (define x-node (pqueue-push! Q x))
+    (hash-set! pq-node x x-node))
 
+  ;; 染色
+  (while (> (pqueue-count Q) 0)
+         ;; 取出最大饱和度的顶点
+         (define v (pqueue-pop! Q))
+         
+         ;;找出v的move-relation中已经染色的顶点
+         (define neighbors-move (get-neighbors MG v))
+         (define neighbors-move-colors (map (lambda (k) (hash-ref color k -1))
+                                            neighbors-move))
+         (define colored-move (filter (lambda (x) (>= x 0))
+                                      neighbors-move-colors))
+         (define move-related (sort colored-move <))
 
+         ;; 染色
+         (define c (choose-color v (hash-ref unavail-colors v) move-related info))
+         (set! num-spills (update-num-spills num-spills c))
+         (hash-set! color v c)
 
+         ;; 将该颜色添加到邻接结点的饱和度中
+         (for ([u (in-neighbors IG v)])
+           ;; 邻接顶点不是寄存器
+           (when (not (set-member? registers u))
+             (define u-saturations (dict-ref unavail-colors u))
+             (define new-u-saturations (set-add u-saturations c))
+             (hash-set! unavail-colors u new-u-saturations)
+             ;;更新队列
+             (pqueue-decrease-key! Q (hash-ref pq-node u)))))
+  (values color num-spills))
+  
+(define (register->color r)
+  (cond
+    [(assq r (reg-colors))
+     => (lambda (p) (cdr p))]
+    [else -1]))
 
-                 
+(define (choose-color v unavail-colors move-related info)
+  (define n (num-registers-for-alloc))
+  ;; 从move中选取颜色
+  (define biased-selection
+    (for/first ([c move-related]
+                #:when (valid-color c v unavail-colors info))
+      c))
     
-       
+  ;; 从最小选择颜色
+  (define unbiased-selection
+    (for/first ([c (in-naturals)]
+                #:when (valid-color c v unavail-colors info))
+      c))
+  (cond
+    [(and biased-selection
+          ;; biased-selection要小于unbiased-selection
+          (or (< biased-selection n) (>= unbiased-selection n)))
+     biased-selection]
+    [else unbiased-selection]))
+
+(define (valid-color c v unavail-colors info)
+  (not (set-member? unavail-colors c)))
+
+;; 队列的实现
+
+
+;;==============================
+;; interp-Lint
+
+(define interp-Lint-class
+  (class object%
+    (super-new)
+
+    (define/public (interp-exp env)
+      (lambda (e)
+        (match e
+          [(Int n) n]
+          ...
+          )))
+
+    (define/public (interp-program p)
+      (match p
+        [(Program '() e)
+         ...]))))
+
+(define interp-Lvar-class
+  (class interp-Lint-class
+    (super-new)
+
+    (define/override (interp-exp env)
+      (lambda (e)
+        (match e
+          [(Var x) ...]
+          [(Let x e body)
+           ...]
+          ;; 重点
+          [else ((super interp-exp env) e)])))))
+
+(define (interp-Lvar p)
+  (send (new interp-Lvar-class) interp-program p))
+
+(define interp-Lif-class
+  (class interp-Lvar-class
+    (super-new)
+
+    (define/public (interp-op op)
+      (match op
+        ['+ fx+]
+        ['- ...]
+        ['read ...]
+        ['not
+         ;; 返回一个函数
+         (lambda (v)
+           (match v
+             [#t #f]
+             [#f #t]))]
+        ['eq? ...]))
+
+    (define/override ((interp-exp env) e)
+      ;; 返回一个输入为e的函数
+      ;; 先定义一个函数，然后使用该函数
+      (define recur (interp-exp env))
+      
+      (match e
+        [(Bool b) b]
+        [...]
+        [(Prim op args)
+         (apply (interp-op op) (for/list ([e args]) (recur e)))]
+        [else ((super interp-exp env) e)]))))
+
+(define (interp-if p)
+  (send (new interp-Lif-class) interp-program p))
+
+;; =-===================
+;; type check
+
+(define type-check-Lvar-class
+  (class object%
+    (super-new)
+
+    (define/public (operator-types)
+      ;; 想想为什么不是((Integer . Integer) . Integer)
+      ;; > (list 2 3)
+      ;; '(2 3)
+      ;; > (cons 2 3)
+      ;; '(2 . 3)
+      '((+ . ((Integer Integer) . Integer))
+        (- . ((Integer Integer) . Integer))
+        (read . (() . Integer))))
+
+    (define/public (type-equal? t1 t2)
+      (equal? t1 t2))
+
+    (define/public (type-check-exp env)
+      (lambda (e)
+        (match e
+          [(Var x) ;;(values ((Var x) (type-check-exp env x)))]
+           (values ((Var x) (dict-ref env x)))]
+          [(Int n) (values (Int n) 'Integer)]
+          [(Let x e body)
+           (define-values (e^ Te)
+             ((type-check-exp env) e))
+           (define type-new-env (dict-set env x Te))
+           (define-values (b Tb)
+             ((type-check-exp type-new-env) body))
+           (values (Let x e^ b) Tb)]
+          [(Prim op es)
+           (define-values (new-es ts)
+             (for/lists (exprs types) ([e^ es])
+               ((type-check-exp env) e^)))
+           (define op-type (type-check-op op ts e))
+           (values (Prim op new-es) op-type)]
+          [else (error "")])))))
+
+(define type-check-Lif-class
+  (class type-check-Lvar-class
+    (super-new)
+
+    (inherit check-type-equal?)
+
+    (define/override (type-check-exp env)
+      (lambda (e)
+        (match e
+          [...]
+          ...)))))
+
+;; cmpq: x<y cmp y, x
+;; result is in EFLAGS
+;; setcc d 取出EFLAGS中的值放入d
+;; cc为：condition code cc
+
+;(if (eq? x y)
+;    ...)
+;cmpq y, x
+;sete A
+;movzbq A, B
+; Jcc Label
+;
+
+(let ([x (read)])
+  (let ([y (read)])
+    (if (if (< x 1) (eq? x 0) (eq? x 2))
+        (+ y 2)
+        (+ y 10))))
+
+(let ([x (read)])
+  (let ([y (read)])
+    (if (< x 1)
+        (if (eq? x 0)
+            (+ y 2)
+            (+ y 10))
+        (if (eq? x 2)
+            (+ y 2)
+            (+ y 10)))))
+
+(define (create_block tail)
+  (match tail
+    [(Goto label) (Goto label)]
+    [else
+     (let ([label (gensym 'block)])
+       (set! basic-blocks (cons (cons label tail) basic-blocks))
+       (Goto label))]))
+
+(define (create_block tail)
+  (match tail
+    [(Goto label) (Goto lable)]
+    [else
+     (let ([label (gensym 'block)])
+       (set! basic-blocks (cons
+                           (cons lable tail)
+                           basic-blocks))
+       (Goto label))]))
+
+(define (explicate_pred cnd thn els)
+  (match cnd
+    [(Var x) ___]
+    [(Let x rhs body) ___]
+    [(Prim 'not (list e)) ___]
+    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
+                  (IfStmt (Prim op es) (create_block thn)
+                          (create_block els))]
+    [(Bool b) (if b thn els)]
+    [(If cnd^ thn^ els^) ___]
+    [else (error "explicate_pred unhandled case" cnd)]))
+
+(define ...
 
 
 
- 
+
+
+
+
+
+    
+           
+
+    
+
+
+
+
+  
